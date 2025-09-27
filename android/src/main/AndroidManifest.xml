@@ -12,6 +12,11 @@
             android:screenOrientation="portrait"
             android:theme="@style/Theme.FullScreen" />
 
+         <!-- Force scanner activity to portrait -->
+    <activity
+      android:name="com.cunning.cunning_document_scanner.CunningDocumentScannerActivity"
+      android:screenOrientation="portrait" />
+
         <provider
             android:name="biz.cunning.cunning_document_scanner.fallback.DocumentScannerFileProvider"
             android:authorities="${applicationId}.DocumentScannerFileProvider"
