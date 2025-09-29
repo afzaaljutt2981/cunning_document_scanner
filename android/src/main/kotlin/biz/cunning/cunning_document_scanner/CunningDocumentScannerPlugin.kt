@@ -3,17 +3,10 @@ package biz.cunning.cunning_document_scanner
 import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Intent
-import android.content.IntentSender
 import android.content.pm.ActivityInfo
 import androidx.core.app.ActivityCompat
 import biz.cunning.cunning_document_scanner.fallback.DocumentScannerActivity
 import biz.cunning.cunning_document_scanner.fallback.constants.DocumentScannerExtra
-import com.google.mlkit.common.MlKitException
-import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
-import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions.RESULT_FORMAT_JPEG
-import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions.SCANNER_MODE_FULL
-import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
-import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
@@ -29,13 +22,10 @@ class CunningDocumentScannerPlugin : FlutterPlugin, MethodCallHandler, ActivityA
     private var binding: ActivityPluginBinding? = null
     private var pendingResult: Result? = null
     private lateinit var activity: Activity
-    private val START_DOCUMENT_ACTIVITY: Int = 0x362738
+
+    // Only the fallback request code is needed now
     private val START_DOCUMENT_FB_ACTIVITY: Int = 0x362737
 
-    /// The MethodChannel that will the communication between Flutter and native Android
-    ///
-    /// This local reference serves to register the plugin with the Flutter Engine and unregister it
-    /// when the Flutter Engine is detached from the Activity
     private lateinit var channel: MethodChannel
 
     override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
@@ -47,6 +37,7 @@ class CunningDocumentScannerPlugin : FlutterPlugin, MethodCallHandler, ActivityA
         if (call.method == "getPictures") {
             val noOfPages = call.argument<Int>("noOfPages") ?: 50
             val isGalleryImportAllowed = call.argument<Boolean>("isGalleryImportAllowed") ?: false
+            // NOTE: isGalleryImportAllowed is ignored by fallback; kept for API compatibility
             this.pendingResult = result
             startScan(noOfPages, isGalleryImportAllowed)
         } else {
@@ -67,77 +58,39 @@ class CunningDocumentScannerPlugin : FlutterPlugin, MethodCallHandler, ActivityA
         this.binding = binding
         if (this.delegate == null) {
             this.delegate = PluginRegistry.ActivityResultListener { requestCode, resultCode, data ->
-                if (requestCode != START_DOCUMENT_ACTIVITY && requestCode != START_DOCUMENT_FB_ACTIVITY) {
+                if (requestCode != START_DOCUMENT_FB_ACTIVITY) {
                     return@ActivityResultListener false
                 }
+
                 var handled = false
-                if (requestCode == START_DOCUMENT_ACTIVITY) {
-                    when (resultCode) {
-                        Activity.RESULT_OK -> {
-                            // check for errors
-                            val error = data?.extras?.getString("error")
-                            if (error != null) {
-                                pendingResult?.error("ERROR", "error - $error", null)
-                            } else {
-                                // get an array with scanned document file paths
-                                val scanningResult: GmsDocumentScanningResult =
-                                    data?.extras?.getParcelable("extra_scanning_result")
-                                        ?: return@ActivityResultListener false
+                when (resultCode) {
+                    Activity.RESULT_OK -> {
+                        val error = data?.extras?.getString("error")
+                        if (error != null) {
+                            pendingResult?.error("ERROR", "error - $error", null)
+                        } else {
+                            val croppedImageResults =
+                                data?.getStringArrayListExtra("croppedImageResults")?.toList()
+                                    ?: let {
+                                        pendingResult?.error("ERROR", "No cropped images returned", null)
+                                        return@ActivityResultListener true
+                                    }
 
-                                val successResponse = scanningResult.pages?.map {
-                                    it.imageUri.toString().removePrefix("file://")
-                                }?.toList()
-                                // trigger the success event handler with an array of cropped images
-                                pendingResult?.success(successResponse)
-                            }
-                            handled = true
+                            // remove "file://" for Flutter File compatibility
+                            val successResponse = croppedImageResults.map { it.removePrefix("file://") }
+                            pendingResult?.success(successResponse)
                         }
-
-                        Activity.RESULT_CANCELED -> {
-                            // user closed camera
-                            pendingResult?.success(emptyList<String>())
-                            handled = true
-                        }
+                        handled = true
                     }
-                } else {
-                    when (resultCode) {
-                        Activity.RESULT_OK -> {
-                            // check for errors
-                            val error = data?.extras?.getString("error")
-                            if (error != null) {
-                                pendingResult?.error("ERROR", "error - $error", null)
-                            } else {
-                                // get an array with scanned document file paths
-                                val croppedImageResults =
-                                    data?.getStringArrayListExtra("croppedImageResults")?.toList()
-                                        ?: let {
-                                            pendingResult?.error("ERROR", "No cropped images returned", null)
-                                            return@ActivityResultListener true
-                                        }
-
-                                // return a list of file paths
-                                // removing file uri prefix as Flutter file will have problems with it
-                                val successResponse = croppedImageResults.map {
-                                    it.removePrefix("file://")
-                                }.toList()
-                                // trigger the success event handler with an array of cropped images
-                                pendingResult?.success(successResponse)
-                            }
-                            handled = true
-                        }
-
-                        Activity.RESULT_CANCELED -> {
-                            // user closed camera
-                            pendingResult?.success(emptyList<String>())
-                            handled = true
-                        }
+                    Activity.RESULT_CANCELED -> {
+                        pendingResult?.success(emptyList<String>())
+                        handled = true
                     }
                 }
 
                 if (handled) {
-                    // Clear the pending result to avoid reuse
+                    // avoid reuse + restore orientation
                     pendingResult = null
-                    // 🔓 Restore orientation after any scanner outcome
                     unlockOrientation()
                 }
                 return@ActivityResultListener handled
@@ -145,7 +98,6 @@ class CunningDocumentScannerPlugin : FlutterPlugin, MethodCallHandler, ActivityA
         } else {
             binding.removeActivityResultListener(this.delegate!!)
         }
-
         binding.addActivityResultListener(delegate!!)
     }
 
@@ -157,15 +109,12 @@ class CunningDocumentScannerPlugin : FlutterPlugin, MethodCallHandler, ActivityA
     /** 🔓 Restore orientation policy after scanner returns */
     private fun unlockOrientation() {
         activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-        // If you prefer sensor-based restore:
-        // activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
+        // Or: activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
     }
 
-    /**
-     * create intent to launch document scanner and set custom options
-     */
+    /** create intent to launch the fallback scanner with custom options */
     private fun createDocumentScanIntent(noOfPages: Int): Intent {
-        val documentScanIntent = Intent(activity, biz.cunning.cunning_document_scanner.fallback.DocumentScannerActivity::class.java)
+        val documentScanIntent = Intent(activity, DocumentScannerActivity::class.java)
         documentScanIntent.putExtra(
             DocumentScannerExtra.EXTRA_MAX_NUM_DOCUMENTS,
             noOfPages
@@ -173,55 +122,24 @@ class CunningDocumentScannerPlugin : FlutterPlugin, MethodCallHandler, ActivityA
         return documentScanIntent
     }
 
-    /**
-     * add document scanner result handler and launch the document scanner
-     */
-    private fun startScan(noOfPages: Int, isGalleryImportAllowed: Boolean) {
-        val options = GmsDocumentScannerOptions.Builder()
-            .setGalleryImportAllowed(isGalleryImportAllowed)
-            .setPageLimit(noOfPages)
-            .setResultFormats(RESULT_FORMAT_JPEG)
-            .setScannerMode(SCANNER_MODE_FULL)
-            .build()
-        val scanner = GmsDocumentScanning.getClient(options)
-
-        // 🔒 Lock before launching any scanner UI (ML Kit or fallback)
+    /** Always launch the fallback (portrait-locked) scanner */
+    private fun startScan(noOfPages: Int, @Suppress("UNUSED_PARAMETER") isGalleryImportAllowed: Boolean) {
         lockPortrait()
-
-        scanner.getStartScanIntent(activity).addOnSuccessListener {
-            try {
-                // Use a custom request code for onActivityResult identification
-                activity.startIntentSenderForResult(
-                    it,
-                    START_DOCUMENT_ACTIVITY,
-                    null,
-                    0, 0, 0
-                )
-            } catch (e: IntentSender.SendIntentException) {
-                pendingResult?.error("ERROR", "Failed to start document scanner", null)
-            }
-        }.addOnFailureListener {
-            if (it is MlKitException) {
-                val intent = createDocumentScanIntent(noOfPages)
-                try {
-                    // 🔒 We already locked above; this is the fallback launch
-                    ActivityCompat.startActivityForResult(
-                        this.activity,
-                        intent,
-                        START_DOCUMENT_FB_ACTIVITY,
-                        null
-                    )
-                } catch (e: ActivityNotFoundException) {
-                    pendingResult?.error("ERROR", "FAILED TO START ACTIVITY", null)
-                }
-            } else {
-                pendingResult?.error("ERROR", "Failed to start document scanner Intent", null)
-            }
+        val intent = createDocumentScanIntent(noOfPages)
+        try {
+            ActivityCompat.startActivityForResult(
+                this.activity,
+                intent,
+                START_DOCUMENT_FB_ACTIVITY,
+                null
+            )
+        } catch (e: ActivityNotFoundException) {
+            pendingResult?.error("ERROR", "FAILED TO START ACTIVITY", null)
         }
     }
 
     override fun onDetachedFromActivityForConfigChanges() {
-        // just in case we are detached mid-flow
+        // in case we are detached mid-flow
         unlockOrientation()
     }
 
@@ -231,7 +149,6 @@ class CunningDocumentScannerPlugin : FlutterPlugin, MethodCallHandler, ActivityA
 
     override fun onDetachedFromActivity() {
         removeActivityResultListener()
-        // ensure unlock on detach
         unlockOrientation()
     }
 
