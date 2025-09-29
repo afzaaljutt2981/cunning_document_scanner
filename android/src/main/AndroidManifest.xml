@@ -1,21 +1,26 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="biz.cunning.cunning_document_scanner">
+
+    <!-- Keep permissions (camera + storage for fallback) -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.CAMERA" />
-    <uses-feature android:name="android.hardware.camera"
-                  android:required="true" />
+    <uses-feature android:name="android.hardware.camera" android:required="true" />
+
     <application android:theme="@style/Theme.AppCompat.NoActionBar">
+
+        <!-- Fallback scanner activity locked to portrait -->
         <activity
             android:name=".fallback.DocumentScannerActivity"
             android:configChanges="orientation|screenSize"
             android:screenOrientation="portrait"
             android:theme="@style/Theme.FullScreen" />
 
-         <!-- Force scanner activity to portrait -->
-    <activity
-      android:name="com.cunning.cunning_document_scanner.CunningDocumentScannerActivity"
-      android:screenOrientation="portrait" />
+        <!-- ❌ REMOVE this non-existent activity (was causing confusion)
+        <activity
+            android:name="com.cunning.cunning_document_scanner.CunningDocumentScannerActivity"
+            android:screenOrientation="portrait" />
+        -->
 
         <provider
             android:name="biz.cunning.cunning_document_scanner.fallback.DocumentScannerFileProvider"
